@@ -95,9 +95,20 @@ class Material {
 public:
   Material() {}
 
-  Material(Color color) : color(color) {}
+  Material(Color color)
+      : color(color), specular(500), diffuseAlbedo(0.6), specularAlbedo(0.3),
+        reflactive(0.05) {}
+
+  Material(Color color, double specular, double diffuseAlbedo,
+           double specularAlbedo, double reflactive)
+      : color(color), specular(specular), diffuseAlbedo(diffuseAlbedo),
+        specularAlbedo(specularAlbedo), reflactive(reflactive) {}
 
   Color color;
+  double diffuseAlbedo;
+  double specularAlbedo;
+  double specular;
+  double reflactive;
 };
 
 const double G = 0.5;

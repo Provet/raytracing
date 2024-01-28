@@ -11,8 +11,12 @@ using namespace std;
 
 const Color BACKGROUND_COLOR = Color(0.2, 0.7, 0.8);
 const map<string, Material> MATERIALS = {
+    {"background", Material(BACKGROUND_COLOR)},
+    {"mirror", Material(Color(1.0, 1.0, 1.0), 1400 /* specular */,
+                        0.0 /* diffuse albedo */, 10.0 /* specular albedo */,
+                        0.9 /* reflactive */)},
     {"default", Material(Color(0.4, 0.4, 0.3))},
-    {"blue", Material(Color(0.2, 0.2, 0.8))},
+    {"blue_rubber", Material(Color(0.2, 0.2, 0.8), 9, 0.9, 0.1, 0.0)},
     {"green", Material(Color(0.2, 0.8, 0.2))},
     {"red", Material(Color(0.8, 0.2, 0.2))},
 };
@@ -28,10 +32,9 @@ public:
   double intensity;
 };
 
-pair<Color, shared_ptr<pair<Point, Vector>>>
-RayCasting(const Point &camera, const Vector &ray,
-           const vector<Sphere> &spheres, const vector<Light> &lights,
-           double tmin, double tmax, bool onlyIntersection = false) {
+pair<Material, shared_ptr<pair<Point, Vector>>>
+CastRay(const Point &camera, const Vector &ray, const vector<Sphere> &spheres,
+        const vector<Light> &lights, double tmin, double tmax) {
   double closestT = INF;
   shared_ptr<Sphere> closestSphere = nullptr;
 
@@ -51,15 +54,17 @@ RayCasting(const Point &camera, const Vector &ray,
   }
 
   if (closestSphere == nullptr) {
-    return {BACKGROUND_COLOR, nullptr};
+    return {MATERIALS.at("background"), nullptr};
   }
 
   Point hit = ray.Norm().Mul(closestT).Shift(camera);
   Vector norm = Vector(closestSphere->center, hit).Norm();
-  if (onlyIntersection) {
-    return {Color(0, 0, 0), make_shared<pair<Point, Vector>>(hit, norm)};
-  }
+  return {closestSphere->material, make_shared<pair<Point, Vector>>(hit, norm)};
+}
 
+Color ComputeLight(const Point &camera, const Vector &ray,
+                   const vector<Sphere> &spheres, const vector<Light> &lights,
+                   const Point &hit, const Vector &norm, const Material &mat) {
   double diffuseLight = 0;
   double specularLight = 0;
 
@@ -69,11 +74,17 @@ RayCasting(const Point &camera, const Vector &ray,
         light.intensity * max(0.0, Vector::DotProduct(rayToLight, norm));
     Vector rayFromLight = Vector(light.position, hit).Norm();
     Vector R = rayFromLight.Reflect(norm);
-    double specularLightDelta =
-        max(0.0, Vector::DotProduct(ray.Mul(-1).Norm(), R));
+    double specularLightDelta = 0;
+
+    if (mat.specular != -1) {
+      specularLightDelta =
+          pow(max(0.0, Vector::DotProduct(ray.Mul(-1).Norm(), R)),
+              mat.specular) *
+          light.intensity;
+    }
 
     if (Vector::DotProduct(rayToLight, norm) > 0) {
-      auto sh = RayCasting(hit, rayToLight, spheres, lights, EPS, INF, true);
+      auto sh = CastRay(hit, rayToLight, spheres, lights, EPS, INF);
       if (sh.second != nullptr) {
         diffuseLightDelta *= 0.5;
         specularLightDelta = 0;
@@ -84,22 +95,50 @@ RayCasting(const Point &camera, const Vector &ray,
     specularLight += specularLightDelta;
   }
 
-  return {closestSphere->material.color.Mul(diffuseLight)
-              .Add(Color(1, 1, 1).Mul(pow(specularLight, 65))),
-          make_shared<pair<Point, Vector>>(hit, norm)};
+  return mat.color.Mul(diffuseLight * mat.diffuseAlbedo)
+      .Add(Color(1, 1, 1).Mul(specularLight * mat.specularAlbedo));
+}
+
+pair<Color, shared_ptr<pair<Point, Vector>>>
+RayCasting(const Point &camera, const Vector &ray,
+           const vector<Sphere> &spheres, const vector<Light> &lights,
+           double tmin, double tmax, int depth = 0) {
+  auto res = CastRay(camera, ray, spheres, lights, tmin, tmax);
+  if (res.second == nullptr) {
+    return {res.first.color, nullptr};
+  }
+
+  auto mat = res.first;
+  auto hit = res.second->first;
+  auto norm = res.second->second;
+
+  auto localColor = ComputeLight(camera, ray, spheres, lights, hit, norm, mat);
+  double r = mat.reflactive;
+  if (depth > 4 || r == 0) {
+    return {localColor, res.second};
+  }
+
+  auto reflectedRay = ray.Reflect(norm);
+  /*auto reflectedHit = Vector::DotProduct(reflectedRay, norm) < 0
+                          ? norm.Mul(0.01).Shift(hit)
+                          : norm.Mul(-0.01).Shift(hit);*/
+  auto reflectedColor =
+      RayCasting(hit, reflectedRay, spheres, lights, EPS, INF, depth + 1).first;
+
+  return {localColor.Add(reflectedColor.Mul(r)), res.second};
 }
 
 Color RayTracing(const Point &camera, const Vector &ray,
                  const vector<Sphere> &spheres, const vector<Light> &lights,
                  double tmin, double tmax) {
-  auto res = RayCasting(camera, ray, spheres, lights, tmin, tmax, false);
+  auto res = RayCasting(camera, ray, spheres, lights, tmin, tmax);
   return res.first;
 }
 
 void render(const Point &camera, const vector<Sphere> &spheres,
             const vector<Light> &lights) {
-  const int W = 1024;
-  const int H = 1024;
+  const int W = 2048;
+  const int H = 2048;
   const double Fw = 1;
   const double Fh = 1;
 
@@ -128,13 +167,16 @@ void render(const Point &camera, const vector<Sphere> &spheres,
 }
 
 int main() {
-  vector<Sphere> spheres = {Sphere(Point(0, 0, 25), 3, MATERIALS.at("default")),
-                            Sphere(Point(3, -5, 25), 4, MATERIALS.at("blue")),
-                            Sphere(Point(-3, -4, 25), 1, MATERIALS.at("green")),
-                            Sphere(Point(1, 4, 20), 2, MATERIALS.at("blue")),
-                            Sphere(Point(-3, 5, 25), 2, MATERIALS.at("red"))};
-  vector<Light> lights = {Light(Point(-5, 10, 0), 1.7),
-                          Light(Point(-20, -30, 50), 3.0)};
+  vector<Sphere> spheres = {
+      Sphere(Point(0, 0, 25), 3, MATERIALS.at("default")),
+      Sphere(Point(-7, 2, 20), 3, MATERIALS.at("mirror")),
+      Sphere(Point(3, -5, 25), 4, MATERIALS.at("blue_rubber")),
+      Sphere(Point(-3, -4, 25), 1, MATERIALS.at("green")),
+      Sphere(Point(1, 4, 20), 2, MATERIALS.at("blue_rubber")),
+      Sphere(Point(-3, 5, 25), 2, MATERIALS.at("red"))};
+  vector<Light> lights = {Light(Point(-5, 10, 0), 1.3),
+                          Light(Point(-20, -30, 50), 1.5),
+                          Light(Point(40, 20, 10), 1.1)};
   Point camera(0, 0, 0);
   render(camera, spheres, lights);
 }
