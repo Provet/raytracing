@@ -69,6 +69,11 @@ public:
     return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
   }
 
+  static Vector CrossProduct(const Vector &lhs, const Vector &rhs) {
+    return Vector(lhs.y * rhs.z - lhs.z * rhs.y, lhs.z * rhs.x - lhs.x * rhs.z,
+                  lhs.x * rhs.y - lhs.y * rhs.x);
+  }
+
   double x;
   double y;
   double z;
@@ -142,5 +147,58 @@ public:
 
   Point center;
   double radius;
+  Material material;
+};
+
+class Triangle {
+public:
+  Triangle() {}
+
+  Triangle(Point a, Point b, Point c, Material material)
+      : a(a), b(b), c(c), material(material) {
+    this->material.color =
+        Color(pow(material.color.r, G), pow(material.color.g, G),
+              pow(material.color.b, G));
+  }
+
+  Vector Normal() const {
+    Vector ab(a, b);
+    Vector ac(a, c);
+    return Vector::CrossProduct(ab, ac).Norm();
+  }
+
+  shared_ptr<double> IntersectRay(const Point &o, const Vector &dir) const {
+    // double A = a.y * (b.z - c.z) + b.y * (c.z - a.z) + c.y * (a.z - b.z);
+    // double B = a.z * (b.x - c.x) + b.z * (c.x - a.x) + c.z * (a.x - b.x);
+    // double C = a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y);
+    // double D = -a.x * (b.y * c.z - c.y * b.z) - b.x * (c.y * a.z - a.y * c.z)
+    // -
+    //            c.x * (a.y * b.z - b.y * a.z);
+
+    Vector n = Normal();
+    Vector v = Vector(o, a);
+    double d = Vector::DotProduct(n, v);
+    double e = Vector::DotProduct(n, dir);
+    if (fabs(e) < EPS) {
+      return nullptr;
+    }
+    double t = d / e;
+    Point p = dir.Norm().Mul(t).Shift(o);
+    Vector pa(p, a);
+    Vector pb(p, b);
+    Vector pc(p, c);
+    Vector n1 = Vector::CrossProduct(pa, pb);
+    Vector n2 = Vector::CrossProduct(pb, pc);
+    Vector n3 = Vector::CrossProduct(pc, pa);
+    if (Vector::DotProduct(n, n1) >= 0 && Vector::DotProduct(n, n2) >= 0 &&
+        Vector::DotProduct(n, n3) >= 0) {
+      return make_shared<double>(t);
+    }
+    return nullptr;
+  }
+
+  Point a;
+  Point b;
+  Point c;
   Material material;
 };

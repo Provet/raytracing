@@ -19,6 +19,7 @@ const map<string, Material> MATERIALS = {
     {"blue_rubber", Material(Color(0.2, 0.2, 0.8), 9, 0.9, 0.1, 0.0)},
     {"green", Material(Color(0.2, 0.8, 0.2))},
     {"red", Material(Color(0.8, 0.2, 0.2))},
+    {"lamp", Material(Color(1.0, 1.0, 1.0), 0, 1, 1, 0)},
 };
 
 class Light {
@@ -34,9 +35,11 @@ public:
 
 pair<Material, shared_ptr<pair<Point, Vector>>>
 CastRay(const Point &camera, const Vector &ray, const vector<Sphere> &spheres,
-        const vector<Light> &lights, double tmin, double tmax) {
+        const vector<Triangle> &triangles, const vector<Light> &lights,
+        double tmin, double tmax) {
   double closestT = INF;
   shared_ptr<Sphere> closestSphere = nullptr;
+  shared_ptr<Triangle> closestTriangle = nullptr;
 
   for (const Sphere &sphere : spheres) {
     auto ts = sphere.IntersectRay(camera, ray);
@@ -53,18 +56,40 @@ CastRay(const Point &camera, const Vector &ray, const vector<Sphere> &spheres,
     }
   }
 
-  if (closestSphere == nullptr) {
+  for (const Triangle &triangle : triangles) {
+    auto ts = triangle.IntersectRay(camera, ray);
+    if (ts == nullptr) {
+      continue;
+    }
+    if (InRange(tmin, tmax, *ts) && LessOrEqual(*ts, closestT)) {
+      closestT = *ts;
+      closestSphere = nullptr;
+      closestTriangle = make_shared<Triangle>(triangle);
+    }
+  }
+
+  if (closestSphere == nullptr && closestTriangle == nullptr) {
     return {MATERIALS.at("background"), nullptr};
   }
 
-  Point hit = ray.Norm().Mul(closestT).Shift(camera);
-  Vector norm = Vector(closestSphere->center, hit).Norm();
-  return {closestSphere->material, make_shared<pair<Point, Vector>>(hit, norm)};
+  if (closestSphere != nullptr) {
+    Point hit = ray.Norm().Mul(closestT).Shift(camera);
+    Vector norm = Vector(closestSphere->center, hit).Norm();
+    return {closestSphere->material,
+            make_shared<pair<Point, Vector>>(hit, norm)};
+  }
+
+  Point hit = ray.Mul(closestT).Shift(camera);
+  Vector norm = closestTriangle->Normal().Mul(-1);
+  return {closestTriangle->material,
+          make_shared<pair<Point, Vector>>(hit, norm)};
 }
 
 Color ComputeLight(const Point &camera, const Vector &ray,
-                   const vector<Sphere> &spheres, const vector<Light> &lights,
-                   const Point &hit, const Vector &norm, const Material &mat) {
+                   const vector<Sphere> &spheres,
+                   const vector<Triangle> &triangles,
+                   const vector<Light> &lights, const Point &hit,
+                   const Vector &norm, const Material &mat) {
   double diffuseLight = 0;
   double specularLight = 0;
 
@@ -83,8 +108,9 @@ Color ComputeLight(const Point &camera, const Vector &ray,
           light.intensity;
     }
 
-    if (Vector::DotProduct(rayToLight, norm) > 0) {
-      auto sh = CastRay(hit, rayToLight, spheres, lights, EPS, INF);
+    if (Vector::DotProduct(rayToLight, norm) > EPS) {
+      auto sh = CastRay(norm.Mul(0.0001).Shift(hit), rayToLight, spheres,
+                        triangles, lights, EPS, INF);
       if (sh.second != nullptr) {
         diffuseLightDelta *= 0.5;
         specularLightDelta = 0;
@@ -101,9 +127,10 @@ Color ComputeLight(const Point &camera, const Vector &ray,
 
 pair<Color, shared_ptr<pair<Point, Vector>>>
 RayCasting(const Point &camera, const Vector &ray,
-           const vector<Sphere> &spheres, const vector<Light> &lights,
-           double tmin, double tmax, int depth = 0) {
-  auto res = CastRay(camera, ray, spheres, lights, tmin, tmax);
+           const vector<Sphere> &spheres, const vector<Triangle> &triangles,
+           const vector<Light> &lights, double tmin, double tmax,
+           int depth = 0) {
+  auto res = CastRay(camera, ray, spheres, triangles, lights, tmin, tmax);
   if (res.second == nullptr) {
     return {res.first.color, nullptr};
   }
@@ -112,7 +139,8 @@ RayCasting(const Point &camera, const Vector &ray,
   auto hit = res.second->first;
   auto norm = res.second->second;
 
-  auto localColor = ComputeLight(camera, ray, spheres, lights, hit, norm, mat);
+  auto localColor =
+      ComputeLight(camera, ray, spheres, triangles, lights, hit, norm, mat);
   double r = mat.reflactive;
   if (depth > 4 || r == 0) {
     return {localColor, res.second};
@@ -123,22 +151,25 @@ RayCasting(const Point &camera, const Vector &ray,
                           ? norm.Mul(0.01).Shift(hit)
                           : norm.Mul(-0.01).Shift(hit);*/
   auto reflectedColor =
-      RayCasting(hit, reflectedRay, spheres, lights, EPS, INF, depth + 1).first;
+      RayCasting(reflectedRay.Norm().Mul(0.0001).Shift(hit), reflectedRay,
+                 spheres, triangles, lights, EPS, INF, depth + 1)
+          .first;
 
   return {localColor.Add(reflectedColor.Mul(r)), res.second};
 }
 
 Color RayTracing(const Point &camera, const Vector &ray,
-                 const vector<Sphere> &spheres, const vector<Light> &lights,
+                 const vector<Sphere> &spheres,
+                 const vector<Triangle> &triangles, const vector<Light> &lights,
                  double tmin, double tmax) {
-  auto res = RayCasting(camera, ray, spheres, lights, tmin, tmax);
+  auto res = RayCasting(camera, ray, spheres, triangles, lights, tmin, tmax);
   return res.first;
 }
 
 void render(const Point &camera, const vector<Sphere> &spheres,
-            const vector<Light> &lights) {
-  const int W = 2048;
-  const int H = 2048;
+            const vector<Triangle> &triangles, const vector<Light> &lights) {
+  const int W = 512;
+  const int H = 512;
   const double Fw = 1;
   const double Fh = 1;
 
@@ -152,7 +183,8 @@ void render(const Point &camera, const vector<Sphere> &spheres,
       double y = -Cy * Fh / H; // y is inverted for some reason. think about it
       double z = 1;
       Vector ray(camera, Point(x, y, z));
-      frame[i * W + j] = RayTracing(camera, ray, spheres, lights, 1.0, INF);
+      frame[i * W + j] =
+          RayTracing(camera, ray, spheres, triangles, lights, 0.0, INF);
     }
   }
 
@@ -166,6 +198,28 @@ void render(const Point &camera, const vector<Sphere> &spheres,
   }
 }
 
+vector<Triangle> ExportObj(const string &filename) {
+  ifstream in;
+  in.open(filename);
+  vector<Point> vertices;
+  vector<Triangle> triangles;
+  while (!in.eof()) {
+    string type;
+    in >> type;
+    if (type == "v") {
+      double x, y, z;
+      in >> x >> y >> z;
+      vertices.push_back(Point(x, y, z));
+    } else if (type == "f") {
+      int a, b, c;
+      in >> a >> b >> c;
+      triangles.push_back(Triangle(vertices[a - 1], vertices[b - 1],
+                                   vertices[c - 1], MATERIALS.at("green")));
+    }
+  }
+  return triangles;
+}
+
 int main() {
   vector<Sphere> spheres = {
       Sphere(Point(0, 0, 25), 3, MATERIALS.at("default")),
@@ -173,10 +227,25 @@ int main() {
       Sphere(Point(3, -5, 25), 4, MATERIALS.at("blue_rubber")),
       Sphere(Point(-3, -4, 25), 1, MATERIALS.at("green")),
       Sphere(Point(1, 4, 20), 2, MATERIALS.at("blue_rubber")),
-      Sphere(Point(-3, 5, 25), 2, MATERIALS.at("red"))};
-  vector<Light> lights = {Light(Point(-5, 10, 0), 1.3),
-                          Light(Point(-20, -30, 50), 1.5),
-                          Light(Point(40, 20, 10), 1.1)};
+      Sphere(Point(-3, 5, 25), 2, MATERIALS.at("red")),
+      // Sphere(Point(-6, 7, 15), 0.5, MATERIALS.at("lamp")),
+      // Sphere(Point(-5, -7, 15), 0.5, MATERIALS.at("lamp")),
+  };
+  vector<Triangle> triangles = {
+      Triangle(Point(-5, -7, 20), Point(3, -7, 20), Point(-7, -5, 25),
+               MATERIALS.at("blue_rubber")),
+      Triangle(Point(4, -5, 10), Point(4, -4, 18), Point(4, 15, 20),
+               MATERIALS.at("mirror")),
+  };
+  vector<Light> lights = {
+      Light(Point(-5, 10, 0), 1.3), Light(Point(-20, -30, 50), 1.5),
+      Light(Point(40, 20, 10), 1.1),
+      // Light(Point(-6, 7, 15), 1.5),
+      // Light(Point(-5, -7, 15), 1.5),
+  };
   Point camera(0, 0, 0);
-  render(camera, spheres, lights);
+  triangles = ExportObj("mesh.obj");
+  triangles.push_back(Triangle(Point(4, -5, 10), Point(4, -4, 18),
+                               Point(4, 15, 20), MATERIALS.at("mirror")));
+  render(camera, spheres, triangles, lights);
 }
